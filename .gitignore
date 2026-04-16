@@ -6,3 +6,5 @@ cosmo_code_&_ supplementary materials/COSMO/
 *.gtf
 *.fastq
 *.csv # optional
+cosmo_code_&_ supplementary materials/
+random/
