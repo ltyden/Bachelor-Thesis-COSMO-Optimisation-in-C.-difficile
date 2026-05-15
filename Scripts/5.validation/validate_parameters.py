@@ -6,12 +6,22 @@ files, unions the predicted operons, evaluates against the EVO reference, and
 prints the full metric set to the terminal.
 
 Usage:
+    # Lenient scoring (default)
     python3 scripts/5.validation/validate_parameters.py \
-        --cds 1 --igr 2 --fd-cds 3.6 --fd-igr 2.0 \
+        --cds 1 --igr 2 --fd-cds 6 --fd-igr 2 \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/annotation.gtf \
+        --gtf /path/to/NC_009089.1_fixed.gtf \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
+
+    # Strict scoring
+    python3 scripts/5.validation/validate_parameters.py \
+        --cds 1 --igr 2 --fd-cds 6 --fd-igr 2 \
+        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
+        --gtf /path/to/NC_009089.1_fixed.gtf \
+        --genome-name "gi|126697566|ref|NC_009089.1|" \
+        --genome-size 4290252 \
+        --strict
 
 Arguments:
     --cds           Minimum CDS coverage depth (integer)
@@ -23,6 +33,8 @@ Arguments:
     --genome-name   Genome name/ID as used in the GTF
     --genome-size   Genome size in base pairs
     --evo-reference Path to EVO reference CSV (default: auto-detected)
+    --strict        Use strict TP scoring: superset matches count as FP instead
+                    of TP (default: lenient)
 """
 
 import argparse
@@ -53,6 +65,9 @@ parser.add_argument("--genome-name", required=True,        help="Genome name/ID"
 parser.add_argument("--genome-size", required=True, type=int, help="Genome size in base pairs")
 parser.add_argument("--evo-reference", default=str(DEFAULT_EVO),
                     help=f"EVO reference CSV (default: {DEFAULT_EVO})")
+parser.add_argument("--strict", action="store_true", default=False,
+                    help="Use strict TP scoring: superset matches count as FP "
+                         "instead of TP (default: lenient)")
 args = parser.parse_args()
 
 bam_files = [Path(b) for b in args.bam]
@@ -101,7 +116,8 @@ def load_predictions(path: Path) -> list[frozenset]:
     return predictions
 
 
-def evaluate(evos: list[dict], predictions: list[frozenset]) -> dict:
+def evaluate(evos: list[dict], predictions: list[frozenset],
+             strict: bool = False) -> dict:
     tp = fp = fn = 0
     for evo in evos:
         eg   = evo["genes"]
@@ -109,7 +125,10 @@ def evaluate(evos: list[dict], predictions: list[frozenset]) -> dict:
         if best == eg:
             tp += 1
         elif eg <= best:
-            fp += 1
+            if strict:
+                fp += 1
+            else:
+                tp += 1
         else:
             fn += 1
     total     = len(evos)
@@ -129,6 +148,7 @@ print(f"  IGR_min         : {args.igr}")
 print(f"  FD_CDS-CDS_min  : {args.fd_cds}")
 print(f"  FD_IGR-CDS_min  : {args.fd_igr}")
 print(f"  BAM files       : {len(bam_files)}")
+print(f"  Scoring         : {'strict' if args.strict else 'lenient'}")
 print("=" * 60)
 
 # ── Run COSMO for each BAM file, collect outputs in a temp directory ──────────
@@ -176,7 +196,7 @@ try:
     if not merged:
         sys.exit("ERROR: No predictions collected — all COSMO runs failed.")
 
-    metrics = evaluate(evos, list(merged))
+    metrics = evaluate(evos, list(merged), strict=args.strict)
 
     print("\n" + "=" * 60)
     print("RESULTS")
@@ -189,9 +209,11 @@ try:
     tp_pct = metrics['TP'] / metrics['total'] * 100
     print(f"  {'TP%':<20}  {tp_pct:>9.1f}%  ({metrics['TP']} / {metrics['total']} EVOs)")
     print(f"  {'True Positives':<20}  {metrics['TP']:>10}")
-    print(f"  {'False Positives':<20}  {metrics['FP']:>10}")
+    if args.strict:
+        print(f"  {'False Positives':<20}  {metrics['FP']:>10}")
     print(f"  {'False Negatives':<20}  {metrics['FN']:>10}")
-    print(f"  {'Precision':<20}  {metrics['Precision']*100:>9.1f}%")
+    if args.strict:
+        print(f"  {'Precision':<20}  {metrics['Precision']*100:>9.1f}%")
     print(f"  {'Recall':<20}  {metrics['Recall']*100:>9.1f}%")
     print(f"  {'F1 Score':<20}  {metrics['F1']*100:>9.1f}%")
     print("=" * 60)

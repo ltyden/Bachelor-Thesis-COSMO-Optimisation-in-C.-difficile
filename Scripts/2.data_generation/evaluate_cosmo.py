@@ -6,19 +6,35 @@ predicted operons from all BAM files for the same combination are unioned before
 evaluation. This ensures all 28 EVOs can be detected even if individual BAM
 files only capture a subset.
 
-For each EVO, the best-matching predicted operon is found and classified as:
-  TP  — predicted operon contains exactly the EVO gene set (full-length match)
-  FP  — predicted operon contains all EVO genes plus extra (over-prediction)
-  FN  — no predicted operon covers all EVO genes (under-prediction or missed)
+For each EVO, the best-matching predicted operon is found and classified
+according to the chosen scoring mode (default: lenient):
+
+  Lenient  TP  — predicted operon exactly matches or is a superset of the EVO
+                 gene set (all EVO genes found, boundary may be too wide)
+  Lenient  FN  — no predicted operon covers all EVO genes
+
+  Strict   TP  — predicted operon exactly matches the EVO gene set
+  Strict   FP  — predicted operon contains all EVO genes plus extra flanking genes
+  Strict   FN  — no predicted operon covers all EVO genes
+
+Note: under lenient scoring FP is always 0 and Precision always 1.0.
 
 Metrics reported per combination:
   TP%, TP, FN, FP, Precision, Recall, F1
 
 Usage:
+    # Lenient scoring (default)
     python3 scripts/2.data_generation/evaluate_cosmo.py \
         --cosmo-dir /path/to/cosmo_output \
         --evo-reference /path/to/evo_reference.csv \
         --output /path/to/evaluation_results.csv
+
+    # Strict scoring
+    python3 scripts/2.data_generation/evaluate_cosmo.py \
+        --cosmo-dir /path/to/cosmo_output \
+        --evo-reference /path/to/evo_reference.csv \
+        --output /path/to/evaluation_results.csv \
+        --strict
 """
 
 import argparse
@@ -48,6 +64,13 @@ def parse_args():
         "--output",
         default=str(REPO_ROOT / "parameter_optimisation" / "raw_datasets" / "evaluation_results.csv"),
         help="Path to write the evaluation results CSV",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Use strict TP scoring: superset matches count as FP instead of TP "
+             "(default: lenient — superset matches count as TP)",
     )
     return parser.parse_args()
 
@@ -87,7 +110,8 @@ def load_cosmo_predictions(path: Path) -> list[frozenset]:
     return predictions
 
 
-def classify_evos(evos: list[dict], predictions: list[frozenset]) -> list[dict]:
+def classify_evos(evos: list[dict], predictions: list[frozenset],
+                   strict: bool = False) -> list[dict]:
     results = []
     for evo in evos:
         evo_genes = evo["genes"]
@@ -97,7 +121,7 @@ def classify_evos(evos: list[dict], predictions: list[frozenset]) -> list[dict]:
         if best == evo_genes:
             outcome = "TP"
         elif evo_genes <= best:
-            outcome = "FP"
+            outcome = "FP" if strict else "TP"
         else:
             outcome = "FN"
 
@@ -112,6 +136,8 @@ def classify_evos(evos: list[dict], predictions: list[frozenset]) -> list[dict]:
 
 
 def compute_metrics(results: list[dict]) -> dict:
+    # Under lenient scoring FP is always 0 and Precision always 1.0 — present
+    # in the return dict for CSV column compatibility but not meaningful.
     tp    = sum(1 for r in results if r["outcome"] == "TP")
     fp    = sum(1 for r in results if r["outcome"] == "FP")
     fn    = sum(1 for r in results if r["outcome"] == "FN")
@@ -168,7 +194,9 @@ def main():
         sys.exit(f"No sample_*.csv files found in {cosmo_dir}")
 
     max_bams = max(len(files) for files in groups.values())
-    print(f"Found {len(groups)} combination(s), up to {max_bams} BAM file(s) each.\n")
+    scoring_label = "strict" if args.strict else "lenient"
+    print(f"Found {len(groups)} combination(s), up to {max_bams} BAM file(s) each.")
+    print(f"Scoring mode: {scoring_label}\n")
 
     rows = []
     for combo_num in sorted(groups.keys()):
@@ -181,7 +209,7 @@ def main():
             for pred in load_cosmo_predictions(f):
                 merged.add(pred)
 
-        results = classify_evos(evos, list(merged))
+        results = classify_evos(evos, list(merged), strict=args.strict)
         metrics = compute_metrics(results)
 
         row = {

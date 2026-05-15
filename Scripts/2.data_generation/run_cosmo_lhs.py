@@ -11,15 +11,36 @@ Usage:
     python3 scripts/2.data_generation/run_cosmo_lhs.py \
         --lhs-file parameter_optimisation/raw_datasets/lhs_combinations.csv \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
+        --output-dir parameter_optimisation/raw_datasets/lhs_output \
         --gtf /path/to/annotation.gtf \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
 
-    # wt1 already done — run only wt2 and wt3, starting index at 2
+    # wt1 already done — resume with wt2 and wt3, telling the script their index starts at 2
     python3 scripts/2.data_generation/run_cosmo_lhs.py \
         --lhs-file parameter_optimisation/raw_datasets/lhs_combinations.csv \
         --bam /path/to/wt2.bam /path/to/wt3.bam \
         --first-bam-index 2 \
+        --output-dir parameter_optimisation/raw_datasets/lhs_output \
+        --gtf /path/to/annotation.gtf \
+        --genome-name "gi|126697566|ref|NC_009089.1|" \
+        --genome-size 4290252
+
+    # Targeted grid — separate output folder so files don't collide with LHS results
+    python3 scripts/2.data_generation/run_cosmo_lhs.py \
+        --lhs-file parameter_optimisation/raw_datasets/targeted_grid.csv \
+        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
+        --output-dir parameter_optimisation/raw_datasets/targeted_grid_output \
+        --gtf /path/to/annotation.gtf \
+        --genome-name "gi|126697566|ref|NC_009089.1|" \
+        --genome-size 4290252
+
+    # Targeted grid — only wt2 and wt3 (wt1 already done), starting index at 2
+    python3 scripts/2.data_generation/run_cosmo_lhs.py \
+        --lhs-file parameter_optimisation/raw_datasets/targeted_grid.csv \
+        --bam /path/to/wt2.bam /path/to/wt3.bam \
+        --first-bam-index 2 \
+        --output-dir parameter_optimisation/raw_datasets/targeted_grid_output \
         --gtf /path/to/annotation.gtf \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
@@ -35,7 +56,7 @@ from pathlib import Path
 REPO_ROOT  = Path(__file__).resolve().parent.parent.parent
 COSMO_DIR  = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "COSMO"
 OUTPUT_SRC = COSMO_DIR / "output"
-OUTPUT_DST = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "cosmo_output"
+DEFAULT_OUTPUT_DST = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "cosmo_output"
 
 
 def detect_delimiter(path: Path) -> str:
@@ -80,11 +101,15 @@ def main():
                         help="Genome name/ID as it appears in the GTF file")
     parser.add_argument("--genome-size", type=int, required=True,
                         help="Size of the genome in base pairs")
+    parser.add_argument("--output-dir", default=None, metavar="DIR",
+                        help="Directory to write output CSVs into "
+                             f"(default: {DEFAULT_OUTPUT_DST})")
     args = parser.parse_args()
 
-    lhs_file  = Path(args.lhs_file)
-    bam_files = [Path(b) for b in args.bam]
-    gtf       = Path(args.gtf)
+    lhs_file   = Path(args.lhs_file)
+    bam_files  = [Path(b) for b in args.bam]
+    gtf        = Path(args.gtf)
+    OUTPUT_DST = Path(args.output_dir) if args.output_dir else DEFAULT_OUTPUT_DST
 
     # Validate all inputs before starting any runs
     if not lhs_file.exists():
