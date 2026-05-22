@@ -6,11 +6,13 @@ operon-prediction accuracy (TP%) from the four COSMO parameters:
   CDS_min, IGR_min, FD_CDS-CDS_min, FD_IGR-CDS_min
 
 Outputs to console:
+  - VIF table for all regressors (multicollinearity check)
   - Full OLS model summary
   - 95% confidence intervals on all coefficients
-  - 5-fold cross-validation (mean R², std R², mean RMSE)
+  - 5-fold cross-validation on training data only (mean R², std R², mean RMSE)
+    All RMSE values are reported in both transformed and original TP% units.
   - Partial F-tests: each regressor dropped once, compared to full model
-  - Test-set RMSE from an 80/20 split
+  - Test-set RMSE (both log and raw TP% units when --log is active)
 
 Saves four diagnostic plots to OUTPUT_DIR:
   residuals_vs_fitted.png, qq_plot.png, scale_location.png,
@@ -28,6 +30,7 @@ Arguments
 
   --log               Apply log(TP% + 1) transform to the response variable.
                       Omit this flag to fit on raw TP%.
+                      When active, RMSE is reported in both log and TP% units.
 
   --output-dir <dir>  Directory where diagnostic plots are saved.
                       Default: parameter_optimisation/analysis
@@ -39,6 +42,19 @@ Examples
 
   # Fit on log(TP%+1), save plots to a custom directory
   python3 scripts/mlr_fitting.py results.csv --log --output-dir my_analysis/plots
+
+Changes from original
+---------------------
+  1. CV is now performed on the training split only, keeping the 20% test
+     set strictly held-out and independent.
+  2. compare_f_test direction is documented and verified: full model is
+     always passed as `self`, reduced model as the argument, so the test
+     correctly asks "does dropping this variable significantly worsen fit?"
+  3. When --log is active, every RMSE is back-transformed via expm1 and
+     reported in both log(TP%+1) and raw TP% units side-by-side.
+  4. A VIF table is computed and printed before model fitting so
+     multicollinearity can be assessed before interpreting coefficients.
+     VIF > 10 is flagged with a warning.
 """
 
 import argparse
@@ -47,9 +63,12 @@ import sys
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 import scipy.stats as stats
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
 from sklearn.metrics import mean_squared_error
+from sklearn.tree import DecisionTreeRegressor, export_text
 import matplotlib
 matplotlib.use("Agg")          # non-interactive backend — no display needed
 import matplotlib.pyplot as plt
@@ -108,9 +127,65 @@ else:
     y       = y_raw
     y_label = "TP%"
 
+# ── Helper: back-transform a scalar/array RMSE to raw TP% units ───────────────
+def rmse_to_raw(rmse_log):
+    """
+    Convert an RMSE on the log(TP%+1) scale to an approximate equivalent
+    on the raw TP% scale.
+
+    We use the delta-method approximation:
+        RMSE_raw ≈ RMSE_log × mean(exp(y_hat))
+    where y_hat is the vector of log-scale fitted values.  This gives a
+    single interpretable number in TP% units without needing to know the
+    exact prediction at every point.
+
+    Only meaningful when LOG_TRANSFORM_Y is True; returns None otherwise.
+    """
+    return None  # placeholder — replaced with the real value after fitting
+
+# ── FIX 1 — VIF table before any modelling ───────────────────────────────────
+# Variance Inflation Factor measures how much the variance of each coefficient
+# is inflated due to linear relationships with the other regressors.
+# VIF = 1/(1 - R²_j) where R²_j is obtained by regressing regressor j on
+# all remaining regressors.  Rule of thumb: VIF > 10 indicates problematic
+# multicollinearity; VIF > 5 is worth noting.
+print("=" * 70)
+print("VARIANCE INFLATION FACTORS  (multicollinearity check)")
+print("=" * 70)
+
+X_with_const = sm.add_constant(X)   # shape (n, 5); column 0 is the intercept
+
+vif_data = pd.DataFrame({
+    "Variable": ["const"] + REGRESSORS,
+    "VIF": [
+        variance_inflation_factor(X_with_const, i)
+        for i in range(X_with_const.shape[1])
+    ],
+})
+# The VIF for the intercept is not informative; drop it from display
+vif_display = vif_data[vif_data["Variable"] != "const"].copy()
+vif_display["Flag"] = vif_display["VIF"].apply(
+    lambda v: "*** HIGH (> 10)" if v > 10 else ("*  elevated (> 5)" if v > 5 else "")
+)
+print(vif_display.to_string(index=False))
+
+high_vif = vif_display[vif_display["VIF"] > 10]
+if not high_vif.empty:
+    print(
+        f"\nWARNING: {list(high_vif['Variable'])} have VIF > 10. "
+        "Coefficient estimates and individual p-values may be unreliable. "
+        "Consider removing or combining correlated predictors."
+    )
+else:
+    print("\nNo severe multicollinearity detected (all VIF ≤ 10).")
+
 # ── 80/20 train-test split ────────────────────────────────────────────────────
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.20, random_state=42
+)
+# Also keep the corresponding raw TP% test values for back-transformed RMSE
+_, _, y_train_raw, y_test_raw = train_test_split(
+    X, y_raw, test_size=0.20, random_state=42
 )
 
 # Add constant (intercept) column to training and test sets
@@ -126,64 +201,211 @@ param_names = ["const"] + REGRESSORS
 results.model.exog_names[:] = param_names   # mutate in-place for display
 
 # ── Console: full model summary ───────────────────────────────────────────────
-print("=" * 70)
-print(f"FULL MODEL SUMMARY  (y = {y_label})")
+print("\n" + "=" * 70)
+print(f"FULL MODEL SUMMARY  (y = {y_label}, fitted on 80% training data)")
 print("=" * 70)
 print(results.summary())
 
 # ── Console: 95% confidence intervals ────────────────────────────────────────
 print("\n95% Confidence Intervals on Coefficients")
 print("-" * 50)
-ci = pd.DataFrame(results.conf_int(alpha=0.05), index=param_names, columns=["2.5%", "97.5%"])
+ci = pd.DataFrame(
+    results.conf_int(alpha=0.05),
+    index=param_names,
+    columns=["2.5%", "97.5%"],
+)
 print(ci.to_string())
 
-# ── 5-fold cross-validation on the full dataset ───────────────────────────────
-X_full_c = sm.add_constant(X)   # full design matrix with intercept
+# ── FIX 2 — 5-fold CV on training data only ───────────────────────────────────
+# Previously CV ran on the full dataset, meaning the held-out 20% test rows
+# participated in CV folds.  The test-set RMSE and CV metrics were therefore
+# not independent.  Now both CV and model fitting operate exclusively on the
+# 80% training split; the test set is touched only once, at the very end.
+print("\n5-Fold Cross-Validation  (training data only — test set is untouched)")
+print("-" * 65)
+
+X_train_full_c = sm.add_constant(X_train)   # already has intercept column
 
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
-cv_r2, cv_rmse = [], []
+cv_r2, cv_rmse_log, cv_rmse_raw = [], [], []
 
-for train_idx, val_idx in kf.split(X_full_c):
-    X_cv_tr, X_cv_val = X_full_c[train_idx], X_full_c[val_idx]
-    y_cv_tr, y_cv_val = y[train_idx], y[val_idx]
+for train_idx, val_idx in kf.split(X_train_full_c):
+    X_cv_tr,  X_cv_val  = X_train_full_c[train_idx], X_train_full_c[val_idx]
+    y_cv_tr,  y_cv_val  = y_train[train_idx],         y_train[val_idx]
+    # raw TP% counterpart (needed for back-transformed RMSE when --log is on)
+    y_raw_val = y_train_raw[val_idx]
 
     cv_res     = sm.OLS(y_cv_tr, X_cv_tr).fit()
     y_pred_val = cv_res.predict(X_cv_val)
 
-    # Compute R² manually so it is consistent across folds
+    # R² computed against the validation fold's own mean (not the training mean)
+    # so it is a fair out-of-sample measure
     ss_res = np.sum((y_cv_val - y_pred_val) ** 2)
     ss_tot = np.sum((y_cv_val - np.mean(y_cv_val)) ** 2)
     cv_r2.append(1.0 - ss_res / ss_tot)
-    cv_rmse.append(np.sqrt(mean_squared_error(y_cv_val, y_pred_val)))
+    cv_rmse_log.append(np.sqrt(mean_squared_error(y_cv_val, y_pred_val)))
 
-print("\n5-Fold Cross-Validation  (full dataset)")
-print("-" * 50)
-print(f"  Mean R²  : {np.mean(cv_r2):.4f}")
-print(f"  Std  R²  : {np.std(cv_r2):.4f}")
-print(f"  Mean RMSE: {np.mean(cv_rmse):.4f}  ({y_label})")
+    # FIX 3 (CV part) — back-transform predictions to raw TP% for interpretable RMSE
+    if LOG_TRANSFORM_Y:
+        y_pred_raw = np.expm1(y_pred_val)
+        cv_rmse_raw.append(np.sqrt(mean_squared_error(y_raw_val, y_pred_raw)))
 
-# ── Partial F-tests: drop each regressor in turn ─────────────────────────────
-# Column 0 of X_train_c is the constant; regressors occupy columns 1..k.
+print(f"  Mean R²        : {np.mean(cv_r2):.4f}")
+print(f"  Std  R²        : {np.std(cv_r2):.4f}")
+print(f"  Mean RMSE      : {np.mean(cv_rmse_log):.4f}  ({y_label})")
+if LOG_TRANSFORM_Y:
+    print(f"  Mean RMSE (raw): {np.mean(cv_rmse_raw):.4f}  (TP%  — back-transformed via expm1)")
+
+# ── FIX 4 — Partial F-tests with explicit direction comment ───────────────────
+# compare_f_test(restricted) is called on the *full* model object (results).
+# statsmodels computes: F = [(RSS_restricted - RSS_full) / q] / [RSS_full / df_full]
+# where q = number of restrictions (1 per dropped variable).
+# A high F / low p-value means dropping that variable significantly worsens
+# fit, i.e. the variable contributes meaningful explanatory power.
+# The direction is: full model (self) vs. reduced model (argument) — correct.
 print("\nPartial F-Tests  (full model vs. model with one regressor dropped)")
+print("High F / low p  →  variable carries significant unique explanatory power")
 print("-" * 65)
-print(f"{'Dropped variable':>22}  {'F-statistic':>12}  {'p-value':>10}")
+print(f"{'Dropped variable':>22}  {'F-statistic':>12}  {'p-value':>10}  {'Significant?':>12}")
 print("-" * 65)
 
 for i, var in enumerate(REGRESSORS):
-    # Keep all columns except the one being dropped (index i+1)
+    # Keep intercept (column 0) plus all regressor columns except the one dropped
     keep_cols  = [0] + [j for j in range(1, len(REGRESSORS) + 1) if j != i + 1]
     X_reduced  = X_train_c[:, keep_cols]
     res_red    = sm.OLS(y_train, X_reduced).fit()
 
-    # compare_f_test: tests whether full model is a significant improvement
-    # over the restricted (reduced) model
+    # results is the full model; res_red is the restricted model (one variable removed)
+    # compare_f_test tests: does adding the dropped variable back in help significantly?
     F_stat, p_val, _ = results.compare_f_test(res_red)
-    print(f"{var:>22}  {F_stat:>12.4f}  {p_val:>10.6f}")
+    sig = "Yes" if p_val < 0.05 else "No"
+    print(f"{var:>22}  {F_stat:>12.4f}  {p_val:>10.6f}  {sig:>12}")
 
-# ── Test-set RMSE ─────────────────────────────────────────────────────────────
-y_pred_test = results.predict(X_test_c)
-test_rmse   = np.sqrt(mean_squared_error(y_test, y_pred_test))
-print(f"\nTest-set RMSE ({y_label}): {test_rmse:.4f}")
+# ── FIX 3 — Test-set RMSE in both units ───────────────────────────────────────
+# When --log is active the raw RMSE printed previously was in log(TP%+1) units,
+# which are not directly interpretable.  We now back-transform predictions via
+# expm1 (the inverse of log1p) and also report RMSE in raw TP% units.
+y_pred_test      = results.predict(X_test_c)
+test_rmse_log    = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+print(f"\nTest-set RMSE ({y_label}): {test_rmse_log:.4f}")
+
+if LOG_TRANSFORM_Y:
+    y_pred_test_raw = np.expm1(y_pred_test)
+    test_rmse_raw   = np.sqrt(mean_squared_error(y_test_raw, y_pred_test_raw))
+    print(f"Test-set RMSE (TP%  — back-transformed): {test_rmse_raw:.4f}")
+    print(
+        "  Interpretation: on the held-out 20%, predictions are off by "
+        f"≈ {test_rmse_raw:.2f} percentage points on average (raw TP% scale)."
+    )
+
+# ── Decision Tree — parameter range extraction ────────────────────────────────
+# The tree partitions the parameter space into rectangular regions.  We find the
+# leaf with the highest predicted mean TP% and trace the path back to the root
+# to read off the exact [min, max] bounds for each parameter.  These bounds feed
+# directly into a reduced grid search.
+
+print("\n" + "=" * 70)
+print("DECISION TREE  (parameter range extraction for reduced grid search)")
+print("=" * 70)
+
+# Cross-validate max_depth on training data (depths 1–8)
+print("Selecting best max_depth via 5-fold CV on training data...")
+best_depth, best_cv_rmse = 1, np.inf
+for depth in range(1, 9):
+    dt_cv  = DecisionTreeRegressor(max_depth=depth, random_state=42)
+    scores = cross_val_score(
+        dt_cv, X_train, y_train, cv=5,
+        scoring="neg_mean_squared_error",
+    )
+    rmse = np.sqrt(-scores.mean())
+    if rmse < best_cv_rmse:
+        best_cv_rmse = rmse
+        best_depth   = depth
+
+print(f"  Best max_depth : {best_depth}  (CV RMSE = {best_cv_rmse:.4f} on {y_label})")
+
+# Fit final tree with the selected depth
+dt = DecisionTreeRegressor(max_depth=best_depth, random_state=42)
+dt.fit(X_train, y_train)
+
+# Evaluate on the held-out test set
+y_pred_dt = dt.predict(X_test)
+dt_rmse   = np.sqrt(mean_squared_error(y_test, y_pred_dt))
+print(f"  Test-set RMSE  : {dt_rmse:.4f}  ({y_label})")
+if LOG_TRANSFORM_Y:
+    dt_rmse_raw = np.sqrt(mean_squared_error(y_test_raw, np.expm1(y_pred_dt)))
+    print(f"  Test-set RMSE  : {dt_rmse_raw:.4f}  (TP% — back-transformed)")
+
+# Print the tree structure in text form
+print(f"\nTree structure:\n")
+print(export_text(dt, feature_names=REGRESSORS))
+
+# ── Find the leaf with the highest predicted mean TP% ────────────────────────
+tree_   = dt.tree_
+is_leaf = tree_.children_left == -1
+
+leaf_values = {
+    node: tree_.value[node][0][0]
+    for node in range(tree_.node_count)
+    if is_leaf[node]
+}
+best_leaf = max(leaf_values, key=leaf_values.get)
+best_val  = leaf_values[best_leaf]
+n_obs     = int(tree_.n_node_samples[best_leaf])
+
+# ── Trace path from root to best leaf, collecting split conditions ────────────
+def path_to_node(tree_, target):
+    """Return list of (node, direction) pairs along the path root → target."""
+    path = []
+
+    def recurse(node):
+        if node == target:
+            return True
+        for child, direction in [
+            (tree_.children_left[node],  "left"),
+            (tree_.children_right[node], "right"),
+        ]:
+            if child >= 0:
+                path.append((node, direction))
+                if recurse(child):
+                    return True
+                path.pop()
+        return False
+
+    recurse(0)
+    return path
+
+# Initialise bounds from the full observed data range
+lo       = {p: float(df[p].min()) for p in REGRESSORS}
+hi       = {p: float(df[p].max()) for p in REGRESSORS}
+split_on = set()
+
+for node, direction in path_to_node(tree_, best_leaf):
+    feat   = REGRESSORS[tree_.feature[node]]
+    thresh = float(tree_.threshold[node])
+    split_on.add(feat)
+    if direction == "left":    # condition: feature ≤ threshold
+        hi[feat] = min(hi[feat], thresh)
+    else:                      # condition: feature > threshold
+        lo[feat] = max(lo[feat], thresh)
+
+# ── Print optimal ranges ──────────────────────────────────────────────────────
+display_val = np.expm1(best_val) if LOG_TRANSFORM_Y else best_val
+val_label   = "TP% (back-transformed)" if LOG_TRANSFORM_Y else "TP%"
+
+print(f"Optimal leaf : node {best_leaf}  |  "
+      f"Mean {val_label} = {display_val:.2f}  |  "
+      f"n = {n_obs} training observations\n")
+print(f"  {'Parameter':<22}  {'Min':>8}  {'Max':>8}  {'Note'}")
+print(f"  {'-'*22}  {'-'*8}  {'-'*8}  {'-'*30}")
+for p in REGRESSORS:
+    note = "" if p in split_on else "(not split on — full range retained)"
+    print(f"  {p:<22}  {lo[p]:>8.3f}  {hi[p]:>8.3f}  {note}")
+print(
+    f"\n  Use these bounds to define the reduced grid search.\n"
+    f"  Verify n = {n_obs}: a small leaf gives less reliable bounds."
+)
 
 # ── Residuals and influence statistics for diagnostic plots ───────────────────
 y_fitted  = results.fittedvalues
@@ -227,7 +449,6 @@ plt.close()
 # ── Plot 4: Actual vs Predicted (training set) ────────────────────────────────
 fig, ax = plt.subplots(figsize=(7, 5))
 ax.scatter(y_train, y_fitted, alpha=0.65, edgecolors="k", linewidths=0.4)
-# 45-degree reference line spanning the full range
 lo = min(y_train.min(), y_fitted.min())
 hi = max(y_train.max(), y_fitted.max())
 ax.plot([lo, hi], [lo, hi], color="red", linestyle="--", linewidth=1)

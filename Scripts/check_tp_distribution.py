@@ -4,7 +4,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 df = pd.read_csv(
-    "parameter_optimisation/raw_datasets/raw_dataset_regression.csv",
+    "/Users/linustyden/Bachelor-Thesis-COSMO-Optimisation-in-C.-difficile/parameter_optimisation/raw_datasets/LHS grid/raw_dataset_regression.csv",
     sep=None, engine="python"
 )
 

@@ -1,40 +1,27 @@
 """
 Evaluates COSMO operon predictions against experimentally validated operons (EVOs).
 
-When multiple BAM files were used (outputs named sample_{n}_bam{i}.csv), the
-predicted operons from all BAM files for the same combination are unioned before
-evaluation. This ensures all 28 EVOs can be detected even if individual BAM
-files only capture a subset.
+When multiple BAM files were used (outputs named sample_{n}_bam{i}.csv), predicted
+operons from all BAM files for the same combination are unioned before evaluation.
 
-For each EVO, the best-matching predicted operon is found and classified
-according to the chosen scoring mode (default: lenient):
-
-  Lenient  TP  — predicted operon exactly matches or is a superset of the EVO
-                 gene set (all EVO genes found, boundary may be too wide)
-  Lenient  FN  — no predicted operon covers all EVO genes
-
-  Strict   TP  — predicted operon exactly matches the EVO gene set
-  Strict   FP  — predicted operon contains all EVO genes plus extra flanking genes
-  Strict   FN  — no predicted operon covers all EVO genes
-
-Note: under lenient scoring FP is always 0 and Precision always 1.0.
+Definitions:
+  TP  — predicted operon whose gene set exactly matches an EVO gene set
+  FN  — EVO not exactly matched by any predicted operon
 
 Metrics reported per combination:
-  TP%, TP, FN, FP, Precision, Recall, F1
+  TP, FN, TP%, Recall, F1
+
+EVO reference CSV format (two columns):
+  Evo_nr    — integer identifier
+  Gene_list — newline-separated gene names, e.g.:
+                gene-CD630_RS11950
+                gene-CD630_RS11955
 
 Usage:
-    # Lenient scoring (default)
-    python3 scripts/2.data_generation/evaluate_cosmo.py \
-        --cosmo-dir /path/to/cosmo_output \
-        --evo-reference /path/to/evo_reference.csv \
+    python3 scripts/2.data_generation/evaluate_cosmo.py \\
+        --cosmo-dir /path/to/cosmo_output \\
+        --evo-reference /path/to/evo_reference.csv \\
         --output /path/to/evaluation_results.csv
-
-    # Strict scoring
-    python3 scripts/2.data_generation/evaluate_cosmo.py \
-        --cosmo-dir /path/to/cosmo_output \
-        --evo-reference /path/to/evo_reference.csv \
-        --output /path/to/evaluation_results.csv \
-        --strict
 """
 
 import argparse
@@ -57,37 +44,40 @@ def parse_args():
     )
     parser.add_argument(
         "--evo-reference",
-        default=str(REPO_ROOT / "cosmo_code_&_ supplementary materials" / "evo_reference.csv"),
-        help="Path to the EVO reference CSV file",
+        default=str(REPO_ROOT / "cosmo_code_&_ supplementary materials" / "evo_reference2.csv"),
+        help="Path to the EVO reference CSV (columns: No, EVOs)",
     )
     parser.add_argument(
         "--output",
         default=str(REPO_ROOT / "parameter_optimisation" / "raw_datasets" / "evaluation_results.csv"),
         help="Path to write the evaluation results CSV",
     )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        default=False,
-        help="Use strict TP scoring: superset matches count as FP instead of TP "
-             "(default: lenient — superset matches count as TP)",
-    )
     return parser.parse_args()
 
 
 def load_evos(path: Path) -> list[dict]:
+    """Read EVO reference CSV (columns: No, EVOs).
+
+    Genes are semicolon-separated within the EVOs column.
+    Rows where EVOs is 'Not expressed' are skipped — those operons are
+    undetectable by COSMO and should not count as FN.
+    """
     evos = []
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            genes = frozenset(row["evo_genes"].split(";"))
-            evos.append({"evo_id": row["evo_id"], "genes": genes})
+            raw = row["EVOs"].strip()
+            if raw.lower() == "not expressed":
+                continue
+            genes = frozenset(g.strip() for g in raw.split(";") if g.strip())
+            evos.append({"evo_nr": row["No"], "genes": genes})
     return evos
 
 
 def load_cosmo_predictions(path: Path) -> list[frozenset]:
+    """Return one frozenset of gene names per predicted operon (from column 7)."""
     predictions = []
-    current_genes: list[str] = []
+    current: list[str] = []
 
     with open(path, newline="") as f:
         reader = csv.reader(f)
@@ -95,65 +85,50 @@ def load_cosmo_predictions(path: Path) -> list[frozenset]:
             if not row:
                 continue
             if row[0].strip():
-                if current_genes:
-                    predictions.append(frozenset(current_genes))
-                current_genes = []
+                if current:
+                    predictions.append(frozenset(current))
+                current = []
             else:
-                raw = row[7].strip() if len(row) > 7 else ""
-                if raw:
-                    gene_id = raw.removeprefix("gene-")
-                    current_genes.append(gene_id)
+                gene = row[7].strip() if len(row) > 7 else ""
+                if gene:
+                    current.append(gene)
 
-    if current_genes:
-        predictions.append(frozenset(current_genes))
+    if current:
+        predictions.append(frozenset(current))
 
     return predictions
 
 
-def classify_evos(evos: list[dict], predictions: list[frozenset],
-                   strict: bool = False) -> list[dict]:
-    results = []
-    for evo in evos:
-        evo_genes = evo["genes"]
-        best    = max(predictions, key=lambda p: len(p & evo_genes), default=frozenset())
-        overlap = best & evo_genes
+def classify_predictions(evos: list[dict], predictions: set[frozenset]) -> dict:
+    """
+    TP: predicted operon exactly matches an EVO gene set
+    FN: EVO not matched by any predicted operon
+    """
+    evo_gene_sets = {evo["genes"] for evo in evos}
+    matched_evos: set[frozenset] = set()
 
-        if best == evo_genes:
-            outcome = "TP"
-        elif evo_genes <= best:
-            outcome = "FP" if strict else "TP"
-        else:
-            outcome = "FN"
+    for pred in predictions:
+        if pred in evo_gene_sets:
+            matched_evos.add(pred)
 
-        results.append({
-            "evo_id":       evo["evo_id"],
-            "outcome":      outcome,
-            "evo_size":     len(evo_genes),
-            "matched_size": len(best),
-            "overlap":      len(overlap),
-        })
-    return results
-
-
-def compute_metrics(results: list[dict]) -> dict:
-    # Under lenient scoring FP is always 0 and Precision always 1.0 — present
-    # in the return dict for CSV column compatibility but not meaningful.
-    tp    = sum(1 for r in results if r["outcome"] == "TP")
-    fp    = sum(1 for r in results if r["outcome"] == "FP")
-    fn    = sum(1 for r in results if r["outcome"] == "FN")
-    total = len(results)
-
-    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    f1        = (2 * precision * recall / (precision + recall)
-                 if (precision + recall) > 0 else 0.0)
-    accuracy  = tp / total if total > 0 else 0.0
+    tp = len(matched_evos)
+    fn = len(evos) - tp
 
     return {
-        "TP": tp, "FP": fp, "FN": fn, "total_EVOs": total,
-        "Accuracy": accuracy, "Recall": recall,
-        "Precision": precision, "F1": f1,
+        "TP": tp, "FN": fn,
+        "total_EVOs": len(evos),
+        "total_predicted": len(predictions),
     }
+
+
+def compute_metrics(counts: dict) -> dict:
+    tp = counts["TP"]
+    fn = counts["FN"]
+
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1     = 2 * recall / (1 + recall) if (1 + recall) > 0 else 0.0
+
+    return {**counts, "Recall": recall, "F1": f1}
 
 
 def group_files_by_combination(cosmo_dir: Path) -> dict[int, list[Path]]:
@@ -194,45 +169,47 @@ def main():
         sys.exit(f"No sample_*.csv files found in {cosmo_dir}")
 
     max_bams = max(len(files) for files in groups.values())
-    scoring_label = "strict" if args.strict else "lenient"
     print(f"Found {len(groups)} combination(s), up to {max_bams} BAM file(s) each.")
-    print(f"Scoring mode: {scoring_label}\n")
+    print(f"Reference EVOs: {len(evos)}\n")
 
     rows = []
     for combo_num in sorted(groups.keys()):
         files = groups[combo_num]
 
-        # Union predicted operons across all BAM files for this combination
-        # so EVOs that only appear in one BAM file can still be detected
+        # Union predicted operons (as gene frozensets) across all BAM files
         merged: set[frozenset] = set()
         for f in files:
             for pred in load_cosmo_predictions(f):
                 merged.add(pred)
 
-        results = classify_evos(evos, list(merged), strict=args.strict)
-        metrics = compute_metrics(results)
+        counts  = classify_predictions(evos, merged)
+        metrics = compute_metrics(counts)
+
+        tp_pct = round(metrics["TP"] / metrics["total_EVOs"] * 100, 1) if metrics["total_EVOs"] > 0 else 0.0
 
         row = {
-            "run_id":    combo_num,
-            "TP%":       round(metrics["Accuracy"] * 100, 1),
-            "TP":        metrics["TP"],
-            "FN":        metrics["FN"],
-            "FP":        metrics["FP"],
-            "Precision": round(metrics["Precision"], 3),
-            "Recall":    round(metrics["Recall"], 3),
-            "F1":        round(metrics["F1"], 3),
-            "bam_files": len(files),
+            "run_id":          combo_num,
+            "TP%":             tp_pct,
+            "TP":              metrics["TP"],
+            "FN":              metrics["FN"],
+            "total_predicted": metrics["total_predicted"],
+            "Recall":          round(metrics["Recall"], 3),
+            "F1":              round(metrics["F1"], 3),
+            "bam_files":       len(files),
         }
         rows.append(row)
 
         print(
             f"Combo {combo_num:<4}  BAMs={len(files)}  TP%={row['TP%']:>5}  "
-            f"TP={row['TP']}  FN={row['FN']}  FP={row['FP']}  "
-            f"Precision={row['Precision']}  Recall={row['Recall']}  F1={row['F1']}"
+            f"TP={row['TP']}  FN={row['FN']}  "
+            f"Recall={row['Recall']}  F1={row['F1']}"
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["run_id", "TP%", "TP", "FN", "FP", "Precision", "Recall", "F1", "bam_files"]
+    fieldnames = [
+        "run_id", "TP%", "TP", "FN", "total_predicted",
+        "Recall", "F1", "bam_files",
+    ]
     with open(out_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()

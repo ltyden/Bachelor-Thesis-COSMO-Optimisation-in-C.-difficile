@@ -5,23 +5,16 @@ Runs COSMO with a single user-defined parameter combination across all BAM
 files, unions the predicted operons, evaluates against the EVO reference, and
 prints the full metric set to the terminal.
 
+TP  — predicted operon whose gene set exactly matches an EVO gene set
+FN  — EVO not exactly matched by any predicted operon
+
 Usage:
-    # Lenient scoring (default)
     python3 scripts/5.validation/validate_parameters.py \
         --cds 1 --igr 2 --fd-cds 6 --fd-igr 2 \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
         --gtf /path/to/NC_009089.1_fixed.gtf \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
-
-    # Strict scoring
-    python3 scripts/5.validation/validate_parameters.py \
-        --cds 1 --igr 2 --fd-cds 6 --fd-igr 2 \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/NC_009089.1_fixed.gtf \
-        --genome-name "gi|126697566|ref|NC_009089.1|" \
-        --genome-size 4290252 \
-        --strict
 
 Arguments:
     --cds           Minimum CDS coverage depth (integer)
@@ -32,23 +25,28 @@ Arguments:
     --gtf           GTF annotation file
     --genome-name   Genome name/ID as used in the GTF
     --genome-size   Genome size in base pairs
-    --evo-reference Path to EVO reference CSV (default: auto-detected)
-    --strict        Use strict TP scoring: superset matches count as FP instead
-                    of TP (default: lenient)
+    --evo-reference Path to EVO reference CSV (default: evo_reference2.csv)
 """
 
 import argparse
-import csv
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-COSMO_DIR = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "COSMO"
+REPO_ROOT  = Path(__file__).resolve().parent.parent.parent
+COSMO_DIR  = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "COSMO"
 OUTPUT_SRC = COSMO_DIR / "output"
-DEFAULT_EVO = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "evo_reference.csv"
+DEFAULT_EVO = REPO_ROOT / "cosmo_code_&_ supplementary materials" / "evo_reference2.csv"
+
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "2.data_generation"))
+from evaluate_cosmo import (    # noqa: E402
+    classify_predictions,
+    compute_metrics,
+    load_cosmo_predictions,
+    load_evos,
+)
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(
@@ -65,9 +63,6 @@ parser.add_argument("--genome-name", required=True,        help="Genome name/ID"
 parser.add_argument("--genome-size", required=True, type=int, help="Genome size in base pairs")
 parser.add_argument("--evo-reference", default=str(DEFAULT_EVO),
                     help=f"EVO reference CSV (default: {DEFAULT_EVO})")
-parser.add_argument("--strict", action="store_true", default=False,
-                    help="Use strict TP scoring: superset matches count as FP "
-                         "instead of TP (default: lenient)")
 args = parser.parse_args()
 
 bam_files = [Path(b) for b in args.bam]
@@ -85,60 +80,6 @@ if not evo_path.exists():
 if not COSMO_DIR.exists():
     sys.exit(f"ERROR: COSMO directory not found: {COSMO_DIR}")
 
-# ── Helper functions (inlined from evaluate_cosmo.py) ─────────────────────────
-def load_evos(path: Path) -> list[dict]:
-    evos = []
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            evos.append({
-                "evo_id": row["evo_id"],
-                "genes":  frozenset(row["evo_genes"].split(";")),
-            })
-    return evos
-
-
-def load_predictions(path: Path) -> list[frozenset]:
-    predictions, current = [], []
-    with open(path, newline="") as f:
-        for row in csv.reader(f):
-            if not row:
-                continue
-            if row[0].strip():
-                if current:
-                    predictions.append(frozenset(current))
-                current = []
-            else:
-                raw = row[7].strip() if len(row) > 7 else ""
-                if raw:
-                    current.append(raw.removeprefix("gene-"))
-    if current:
-        predictions.append(frozenset(current))
-    return predictions
-
-
-def evaluate(evos: list[dict], predictions: list[frozenset],
-             strict: bool = False) -> dict:
-    tp = fp = fn = 0
-    for evo in evos:
-        eg   = evo["genes"]
-        best = max(predictions, key=lambda p: len(p & eg), default=frozenset())
-        if best == eg:
-            tp += 1
-        elif eg <= best:
-            if strict:
-                fp += 1
-            else:
-                tp += 1
-        else:
-            fn += 1
-    total     = len(evos)
-    recall    = tp / (tp + fn)    if (tp + fn) > 0    else 0.0
-    precision = tp / (tp + fp)    if (tp + fp) > 0    else 0.0
-    f1        = (2 * precision * recall / (precision + recall)
-                 if (precision + recall) > 0 else 0.0)
-    return {"TP": tp, "FP": fp, "FN": fn, "total": total,
-            "Precision": precision, "Recall": recall, "F1": f1}
-
 # ── Print run header ───────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 print("COSMO PARAMETER VALIDATION")
@@ -148,11 +89,10 @@ print(f"  IGR_min         : {args.igr}")
 print(f"  FD_CDS-CDS_min  : {args.fd_cds}")
 print(f"  FD_IGR-CDS_min  : {args.fd_igr}")
 print(f"  BAM files       : {len(bam_files)}")
-print(f"  Scoring         : {'strict' if args.strict else 'lenient'}")
 print("=" * 60)
 
 # ── Run COSMO for each BAM file, collect outputs in a temp directory ──────────
-evos    = load_evos(evo_path)
+evos   = load_evos(evo_path)
 merged: set[frozenset] = set()
 temp_dir = tempfile.mkdtemp(prefix="cosmo_validate_")
 
@@ -188,32 +128,30 @@ try:
 
         shutil.move(str(src), str(dst))
 
-        preds = load_predictions(dst)
-        merged.update(preds)
+        preds = load_cosmo_predictions(dst)
+        for pred in preds:
+            merged.add(pred)
         print(f"  Done — {len(preds)} operons predicted")
 
     # ── Evaluate union of predictions against all EVOs ─────────────────────────
     if not merged:
         sys.exit("ERROR: No predictions collected — all COSMO runs failed.")
 
-    metrics = evaluate(evos, list(merged), strict=args.strict)
+    counts  = classify_predictions(evos, merged)
+    metrics = compute_metrics(counts)
+    tp_pct  = metrics["TP"] / metrics["total_EVOs"] * 100 if metrics["total_EVOs"] > 0 else 0.0
 
     print("\n" + "=" * 60)
     print("RESULTS")
     print("=" * 60)
-    print(f"  EVOs evaluated  : {metrics['total']}")
-    print(f"  Predicted operons (union across {len(bam_files)} BAM files): {len(merged)}")
+    print(f"  EVOs evaluated  : {metrics['total_EVOs']}")
+    print(f"  Predicted operons (union across {len(bam_files)} BAM files): {metrics['total_predicted']}")
     print()
     print(f"  {'Metric':<20}  {'Value':>10}")
     print(f"  {'─'*20}  {'─'*10}")
-    tp_pct = metrics['TP'] / metrics['total'] * 100
-    print(f"  {'TP%':<20}  {tp_pct:>9.1f}%  ({metrics['TP']} / {metrics['total']} EVOs)")
+    print(f"  {'TP%':<20}  {tp_pct:>9.1f}%  ({metrics['TP']} / {metrics['total_EVOs']} EVOs)")
     print(f"  {'True Positives':<20}  {metrics['TP']:>10}")
-    if args.strict:
-        print(f"  {'False Positives':<20}  {metrics['FP']:>10}")
     print(f"  {'False Negatives':<20}  {metrics['FN']:>10}")
-    if args.strict:
-        print(f"  {'Precision':<20}  {metrics['Precision']*100:>9.1f}%")
     print(f"  {'Recall':<20}  {metrics['Recall']*100:>9.1f}%")
     print(f"  {'F1 Score':<20}  {metrics['F1']*100:>9.1f}%")
     print("=" * 60)

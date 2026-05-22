@@ -11,27 +11,26 @@ in the output directory and folds those observations back into the GP,
 so no completed iteration is re-run.
 
 Usage:
-    # Full search space, optimising TP%, lenient scoring (default)
+    # Full search space, optimising TP%
     python3 scripts/4.optimisation/bayesian_optimisation.py \
         --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
         --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference.csv \
+        --evo-reference /path/to/evo_reference2.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --n-iter 30 \
         --output-dir parameter_optimisation/analysis/bo_run_1
 
-    # Narrowed ranges around the targeted-grid optimum, optimising F1, strict scoring
+    # Narrowed ranges around the targeted-grid optimum, optimising F1
     python3 scripts/4.optimisation/bayesian_optimisation.py \
         --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
         --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference.csv \
+        --evo-reference /path/to/evo_reference2.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --target F1 \
-        --strict \
         --n-iter 30 \
         --cds-range 1 5 --igr-range 1 5 --fd-cds-range 6 12 --fd-igr-range 2 4 \
         --output-dir parameter_optimisation/analysis/bo_run_2
@@ -41,7 +40,7 @@ Usage:
         --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
         --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
         --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference.csv \
+        --evo-reference /path/to/evo_reference2.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --n-iter 30 \
@@ -54,13 +53,11 @@ Arguments:
     --bam             One or more BAM files. Predictions are unioned across all
                       BAM files before evaluation (same logic as evaluate_cosmo.py).
     --gtf             GTF annotation file.
-    --evo-reference   CSV listing experimentally validated operons (evo_reference.csv).
+    --evo-reference   CSV listing experimentally validated operons (evo_reference2.csv).
     --genome-name     Genome identifier as it appears in the GTF.
     --genome-size     Genome length in base pairs.
-    --target          Metric to maximise: TP%, F1, Precision, or Recall
+    --target          Metric to maximise: TP%, F1, or Recall
                       (default: TP%).
-    --strict          Use strict TP scoring: superset matches count as FP instead
-                      of TP (default: lenient).
     --n-iter          Number of BO iterations (default: 30).
     --xi              EI exploration parameter — higher values favour exploration
                       over exploitation (default: 0.01).
@@ -106,7 +103,7 @@ N_RESTARTS = 10
 # evaluate_cosmo.py lives two directories up in scripts/2.data_generation/.
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "2.data_generation"))
 from evaluate_cosmo import (       # noqa: E402
-    classify_evos,
+    classify_predictions,
     compute_metrics,
     load_cosmo_predictions,
     load_evos,
@@ -209,32 +206,25 @@ def run_cosmo_single(
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
-def evaluate_outputs(output_paths: list[Path], evos: list[dict],
-                     strict: bool = False) -> dict:
+def evaluate_outputs(output_paths: list[Path], evos: list[dict]) -> dict:
     """Union predictions across BAM files and compute all metrics."""
     merged: set[frozenset] = set()
     for p in output_paths:
         for pred in load_cosmo_predictions(p):
             merged.add(pred)
-    results = classify_evos(evos, list(merged), strict=strict)
-    return compute_metrics(results)
+    counts = classify_predictions(evos, merged)
+    return compute_metrics(counts)
 
 
 def metrics_to_row(metrics: dict) -> dict:
-    """Convert compute_metrics output to the flat row format used in the log.
-
-    Under lenient scoring FP is always 0 and Precision always 1.0 — present
-    for CSV column compatibility but not meaningful. Under strict scoring both
-    are meaningful.
-    """
+    """Convert compute_metrics output to the flat row format used in the log."""
+    tp_pct = round(metrics["TP"] / metrics["total_EVOs"] * 100, 1) if metrics["total_EVOs"] > 0 else 0.0
     return {
-        "TP%":       round(metrics["Accuracy"] * 100, 1),
-        "TP":        metrics["TP"],
-        "FN":        metrics["FN"],
-        "FP":        metrics["FP"],
-        "Precision": round(metrics["Precision"], 3),
-        "Recall":    round(metrics["Recall"], 3),
-        "F1":        round(metrics["F1"], 3),
+        "TP%":    tp_pct,
+        "TP":     metrics["TP"],
+        "FN":     metrics["FN"],
+        "Recall": round(metrics["Recall"], 3),
+        "F1":     round(metrics["F1"], 3),
     }
 
 
@@ -277,7 +267,7 @@ def main():
                         help="Genome size in base pairs")
     parser.add_argument("--target", default="TP%",
                         metavar="COL",
-                        help="Metric to maximise: TP%%, F1, Precision, Recall "
+                        help="Metric to maximise: TP%%, F1, Recall "
                              "(default: TP%%)")
     parser.add_argument("--n-iter", type=int, default=30,
                         help="Number of BO iterations (default: 30)")
@@ -291,11 +281,6 @@ def main():
                         help="FD_CDS-CDS_min search range (default: 2 20)")
     parser.add_argument("--fd-igr-range", nargs=2, type=int, metavar=("MIN", "MAX"),
                         help="FD_IGR-CDS_min search range (default: 2 15)")
-    parser.add_argument("--strict",
-                        action="store_true",
-                        default=False,
-                        help="Use strict TP scoring: superset matches count as FP "
-                             "instead of TP (default: lenient)")
     parser.add_argument("--output-dir",
                         default="parameter_optimisation/analysis/bo_results",
                         metavar="DIR",
@@ -366,14 +351,13 @@ def main():
             writer = csv.writer(f, delimiter=";")
             writer.writerow([
                 "iteration", *REGRESSORS,
-                "TP%", "TP", "FN", "FP", "Precision", "Recall", "F1",
+                "TP%", "TP", "FN", "Recall", "F1",
                 "EI_score", "bam_files",
             ])
 
     print(f"Seed observations : {len(X_all)}")
     print(f"Best {args.target:<10}: {np.nanmax(y_all):.1f}")
     print(f"Iterations planned: {args.n_iter}  (starting at {start_iter})")
-    print(f"Scoring mode      : {'strict' if args.strict else 'lenient'}")
     print("\nParameter search ranges:")
     for param, (lo, hi) in active_bounds.items():
         flag = "  (full range)" if (lo, hi) == PARAM_BOUNDS[param] else "  (narrowed)"
@@ -441,15 +425,15 @@ def main():
             y_all = np.append(y_all, np.nan)
             continue
 
-        raw_metrics = evaluate_outputs(output_paths, evos, strict=args.strict)
+        raw_metrics = evaluate_outputs(output_paths, evos)
         row         = metrics_to_row(raw_metrics)
         observed    = target_value(row, args.target)
 
         print("done")
         print(
             f"  {args.target}={observed}  "
-            f"TP={row['TP']}  FN={row['FN']}  FP={row['FP']}  "
-            f"Precision={row['Precision']}  F1={row['F1']}"
+            f"TP={row['TP']}  FN={row['FN']}  "
+            f"Recall={row['Recall']}  F1={row['F1']}"
         )
 
         X_all = np.vstack([X_all, candidate.astype(float)])
@@ -460,8 +444,8 @@ def main():
             writer.writerow([
                 iteration,
                 int(cds), int(igr), int(fd_cds), int(fd_igr),
-                row["TP%"], row["TP"], row["FN"], row["FP"],
-                row["Precision"], row["Recall"], row["F1"],
+                row["TP%"], row["TP"], row["FN"],
+                row["Recall"], row["F1"],
                 round(ei_val, 6), len(bam_files),
             ])
 
