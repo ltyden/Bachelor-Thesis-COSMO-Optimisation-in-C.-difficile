@@ -2,12 +2,13 @@
 Latin Hypercube Sampling for COSMO parameter combinations.
 
 Usage:
-    python lhs_sampling.py -n 100 \
+    python3 scripts/2.data_generation/lhs_sampling.py \
+        -n 100 \
         --cds-min 1 --cds-max 20 \
         --igr-min 1 --igr-max 25 \
         --fd-cds-min 2 --fd-cds-max 20 \
         --fd-igr-min 2 --fd-igr-max 15 \
-        --output lhs_combinations.csv
+        --output path/to/output_file.csv
 """
 
 import argparse

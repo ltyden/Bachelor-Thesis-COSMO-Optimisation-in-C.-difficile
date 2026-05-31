@@ -20,7 +20,9 @@ Saves four diagnostic plots to OUTPUT_DIR:
 
 Usage
 -----
-  python3 scripts/mlr_fitting.py <input_csv> [--log] [--output-dir <dir>]
+  python3 scripts/4.optimisation/mlr_fitting.py path/to/input_file.csv \
+      [--transform {none,log,sqrt,cbrt,logit}] \
+      [--output-dir path/to/output_directory]
 
 Arguments
 ---------
@@ -28,33 +30,29 @@ Arguments
                       Required columns: CDS_min, IGR_min, FD_CDS-CDS_min,
                       FD_IGR-CDS_min, TP%
 
-  --log               Apply log(TP% + 1) transform to the response variable.
-                      Omit this flag to fit on raw TP%.
-                      When active, RMSE is reported in both log and TP% units.
+  --transform         Transform to apply to the response variable (default: none).
+                        none   — raw TP%, no transform
+                        log    — log(TP% + 1)              inverse: expm1
+                        sqrt   — √TP%                      inverse: square
+                        cbrt   — ∛TP%                      inverse: cube
+                        logit  — log(TP% / (100 - TP%))   inverse: 100·sigmoid
+                                 (0 and 100 are clamped away from the boundary)
 
-  --output-dir <dir>  Directory where diagnostic plots are saved.
+  --output-dir        Directory where diagnostic plots are saved.
                       Default: parameter_optimisation/analysis
 
 Examples
 --------
-  # Fit on raw TP%, plots go to the default output directory
-  python3 scripts/mlr_fitting.py parameter_optimisation/raw_datasets/lhs_results.csv
+  # No transform (default)
+  python3 scripts/4.optimisation/mlr_fitting.py path/to/input_file.csv
 
-  # Fit on log(TP%+1), save plots to a custom directory
-  python3 scripts/mlr_fitting.py results.csv --log --output-dir my_analysis/plots
+  # Square-root transform
+  python3 scripts/4.optimisation/mlr_fitting.py path/to/input_file.csv \
+      --transform sqrt
 
-Changes from original
----------------------
-  1. CV is now performed on the training split only, keeping the 20% test
-     set strictly held-out and independent.
-  2. compare_f_test direction is documented and verified: full model is
-     always passed as `self`, reduced model as the argument, so the test
-     correctly asks "does dropping this variable significantly worsen fit?"
-  3. When --log is active, every RMSE is back-transformed via expm1 and
-     reported in both log(TP%+1) and raw TP% units side-by-side.
-  4. A VIF table is computed and printed before model fitting so
-     multicollinearity can be assessed before interpreting coefficients.
-     VIF > 10 is flagged with a warning.
+  # Log transform, custom output directory
+  python3 scripts/4.optimisation/mlr_fitting.py path/to/input_file.csv \
+      --transform log --output-dir path/to/output_directory
 """
 
 import argparse
@@ -85,10 +83,11 @@ parser.add_argument(
          "(must have columns: CDS_min, IGR_min, FD_CDS-CDS_min, FD_IGR-CDS_min, TP%%)",
 )
 parser.add_argument(
-    "--log",
-    action="store_true",
-    default=False,
-    help="Apply log(TP%% + 1) transform to the response variable (default: raw TP%%)",
+    "--transform",
+    choices=["none", "log", "sqrt", "cbrt", "logit"],
+    default="none",
+    help="Transform to apply to TP%% before fitting "
+         "(none|log|sqrt|cbrt|logit, default: none)",
 )
 parser.add_argument(
     "--output-dir",
@@ -99,12 +98,36 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-INPUT_CSV       = args.input_csv
-LOG_TRANSFORM_Y = args.log
-OUTPUT_DIR      = args.output_dir
+INPUT_CSV  = args.input_csv
+TRANSFORM  = args.transform
+OUTPUT_DIR = args.output_dir
 
 REGRESSORS = ["CDS_min", "IGR_min", "FD_CDS-CDS_min", "FD_IGR-CDS_min"]
 TARGET     = "TP%"
+
+# ── Transform / inverse-transform helpers ────────────────────────────────────
+_EPS = 1e-6   # guard for logit at 0 and 100
+
+TRANSFORMS = {
+    "none":  (lambda y: y,
+              lambda y: y,
+              "TP%"),
+    "log":   (lambda y: np.log1p(y),
+              lambda y: np.expm1(y),
+              "log(TP% + 1)"),
+    "sqrt":  (lambda y: np.sqrt(y),
+              lambda y: np.square(y),
+              "√TP%"),
+    "cbrt":  (lambda y: np.cbrt(y),
+              lambda y: np.power(y, 3),
+              "∛TP%"),
+    "logit": (lambda y: np.log(np.clip(y, _EPS, 100 - _EPS) /
+                               (100 - np.clip(y, _EPS, 100 - _EPS))),
+              lambda y: 100 / (1 + np.exp(-y)),
+              "logit(TP%/100)"),
+}
+
+transform_fn, inverse_fn, y_label = TRANSFORMS[TRANSFORM]
 
 # ── Prepare output directory ──────────────────────────────────────────────────
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -118,30 +141,9 @@ if missing:
 
 X     = df[REGRESSORS].to_numpy(dtype=float)
 y_raw = df[TARGET].to_numpy(dtype=float)
+y     = transform_fn(y_raw)
 
-# Apply log transform if requested
-if LOG_TRANSFORM_Y:
-    y       = np.log1p(y_raw)
-    y_label = "log(TP% + 1)"
-else:
-    y       = y_raw
-    y_label = "TP%"
-
-# ── Helper: back-transform a scalar/array RMSE to raw TP% units ───────────────
-def rmse_to_raw(rmse_log):
-    """
-    Convert an RMSE on the log(TP%+1) scale to an approximate equivalent
-    on the raw TP% scale.
-
-    We use the delta-method approximation:
-        RMSE_raw ≈ RMSE_log × mean(exp(y_hat))
-    where y_hat is the vector of log-scale fitted values.  This gives a
-    single interpretable number in TP% units without needing to know the
-    exact prediction at every point.
-
-    Only meaningful when LOG_TRANSFORM_Y is True; returns None otherwise.
-    """
-    return None  # placeholder — replaced with the real value after fitting
+print(f"Transform: {TRANSFORM}  →  y = {y_label}")
 
 # ── FIX 1 — VIF table before any modelling ───────────────────────────────────
 # Variance Inflation Factor measures how much the variance of each coefficient
@@ -245,16 +247,15 @@ for train_idx, val_idx in kf.split(X_train_full_c):
     cv_r2.append(1.0 - ss_res / ss_tot)
     cv_rmse_log.append(np.sqrt(mean_squared_error(y_cv_val, y_pred_val)))
 
-    # FIX 3 (CV part) — back-transform predictions to raw TP% for interpretable RMSE
-    if LOG_TRANSFORM_Y:
-        y_pred_raw = np.expm1(y_pred_val)
+    if TRANSFORM != "none":
+        y_pred_raw = inverse_fn(y_pred_val)
         cv_rmse_raw.append(np.sqrt(mean_squared_error(y_raw_val, y_pred_raw)))
 
 print(f"  Mean R²        : {np.mean(cv_r2):.4f}")
 print(f"  Std  R²        : {np.std(cv_r2):.4f}")
 print(f"  Mean RMSE      : {np.mean(cv_rmse_log):.4f}  ({y_label})")
-if LOG_TRANSFORM_Y:
-    print(f"  Mean RMSE (raw): {np.mean(cv_rmse_raw):.4f}  (TP%  — back-transformed via expm1)")
+if TRANSFORM != "none":
+    print(f"  Mean RMSE (raw): {np.mean(cv_rmse_raw):.4f}  (TP%  — back-transformed)")
 
 # ── FIX 4 — Partial F-tests with explicit direction comment ───────────────────
 # compare_f_test(restricted) is called on the *full* model object (results).
@@ -290,8 +291,8 @@ test_rmse_log    = np.sqrt(mean_squared_error(y_test, y_pred_test))
 
 print(f"\nTest-set RMSE ({y_label}): {test_rmse_log:.4f}")
 
-if LOG_TRANSFORM_Y:
-    y_pred_test_raw = np.expm1(y_pred_test)
+if TRANSFORM != "none":
+    y_pred_test_raw = inverse_fn(y_pred_test)
     test_rmse_raw   = np.sqrt(mean_squared_error(y_test_raw, y_pred_test_raw))
     print(f"Test-set RMSE (TP%  — back-transformed): {test_rmse_raw:.4f}")
     print(
@@ -333,8 +334,8 @@ dt.fit(X_train, y_train)
 y_pred_dt = dt.predict(X_test)
 dt_rmse   = np.sqrt(mean_squared_error(y_test, y_pred_dt))
 print(f"  Test-set RMSE  : {dt_rmse:.4f}  ({y_label})")
-if LOG_TRANSFORM_Y:
-    dt_rmse_raw = np.sqrt(mean_squared_error(y_test_raw, np.expm1(y_pred_dt)))
+if TRANSFORM != "none":
+    dt_rmse_raw = np.sqrt(mean_squared_error(y_test_raw, inverse_fn(y_pred_dt)))
     print(f"  Test-set RMSE  : {dt_rmse_raw:.4f}  (TP% — back-transformed)")
 
 # Print the tree structure in text form
@@ -391,8 +392,8 @@ for node, direction in path_to_node(tree_, best_leaf):
         lo[feat] = max(lo[feat], thresh)
 
 # ── Print optimal ranges ──────────────────────────────────────────────────────
-display_val = np.expm1(best_val) if LOG_TRANSFORM_Y else best_val
-val_label   = "TP% (back-transformed)" if LOG_TRANSFORM_Y else "TP%"
+display_val = inverse_fn(best_val) if TRANSFORM != "none" else best_val
+val_label   = f"TP% (back-transformed from {y_label})" if TRANSFORM != "none" else "TP%"
 
 print(f"Optimal leaf : node {best_leaf}  |  "
       f"Mean {val_label} = {display_val:.2f}  |  "

@@ -6,10 +6,15 @@ operons from all BAM files for the same combination are unioned before evaluatio
 
 Definitions:
   TP  — predicted operon whose gene set exactly matches an EVO gene set
+  FP  — predicted operon that does not exactly match any EVO
   FN  — EVO not exactly matched by any predicted operon
 
+Note: FP will be large because COSMO predicts all operons in the genome, not only
+the 28 validated ones. Most non-matching predictions are unannotated operons, not
+necessarily wrong calls.
+
 Metrics reported per combination:
-  TP, FN, TP%, Recall, F1
+  TP, FP, FN, TP%, Precision, Recall, F1
 
 EVO reference CSV format (two columns):
   Evo_nr    — integer identifier
@@ -18,10 +23,10 @@ EVO reference CSV format (two columns):
                 gene-CD630_RS11955
 
 Usage:
-    python3 scripts/2.data_generation/evaluate_cosmo.py \\
-        --cosmo-dir /path/to/cosmo_output \\
-        --evo-reference /path/to/evo_reference.csv \\
-        --output /path/to/evaluation_results.csv
+    python3 scripts/2.data_generation/evaluate_cosmo.py \
+        --cosmo-dir path/to/cosmo_output_directory \
+        --evo-reference path/to/evo_reference.csv \
+        --output path/to/evaluation_results.csv
 """
 
 import argparse
@@ -102,20 +107,25 @@ def load_cosmo_predictions(path: Path) -> list[frozenset]:
 def classify_predictions(evos: list[dict], predictions: set[frozenset]) -> dict:
     """
     TP: predicted operon exactly matches an EVO gene set
+    FP: predicted operon does not match any EVO
     FN: EVO not matched by any predicted operon
     """
     evo_gene_sets = {evo["genes"] for evo in evos}
     matched_evos: set[frozenset] = set()
+    tp = 0
+    fp = 0
 
     for pred in predictions:
         if pred in evo_gene_sets:
+            tp += 1
             matched_evos.add(pred)
+        else:
+            fp += 1
 
-    tp = len(matched_evos)
-    fn = len(evos) - tp
+    fn = len(evos) - len(matched_evos)
 
     return {
-        "TP": tp, "FN": fn,
+        "TP": tp, "FP": fp, "FN": fn,
         "total_EVOs": len(evos),
         "total_predicted": len(predictions),
     }
@@ -123,12 +133,15 @@ def classify_predictions(evos: list[dict], predictions: set[frozenset]) -> dict:
 
 def compute_metrics(counts: dict) -> dict:
     tp = counts["TP"]
+    fp = counts["FP"]
     fn = counts["FN"]
 
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1     = 2 * recall / (1 + recall) if (1 + recall) > 0 else 0.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
 
-    return {**counts, "Recall": recall, "F1": f1}
+    return {**counts, "Precision": precision, "Recall": recall, "F1": f1}
 
 
 def group_files_by_combination(cosmo_dir: Path) -> dict[int, list[Path]]:
@@ -191,8 +204,10 @@ def main():
             "run_id":          combo_num,
             "TP%":             tp_pct,
             "TP":              metrics["TP"],
+            "FP":              metrics["FP"],
             "FN":              metrics["FN"],
             "total_predicted": metrics["total_predicted"],
+            "Precision":       round(metrics["Precision"], 3),
             "Recall":          round(metrics["Recall"], 3),
             "F1":              round(metrics["F1"], 3),
             "bam_files":       len(files),
@@ -201,14 +216,14 @@ def main():
 
         print(
             f"Combo {combo_num:<4}  BAMs={len(files)}  TP%={row['TP%']:>5}  "
-            f"TP={row['TP']}  FN={row['FN']}  "
-            f"Recall={row['Recall']}  F1={row['F1']}"
+            f"TP={row['TP']}  FP={row['FP']}  FN={row['FN']}  "
+            f"Precision={row['Precision']}  Recall={row['Recall']}  F1={row['F1']}"
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
-        "run_id", "TP%", "TP", "FN", "total_predicted",
-        "Recall", "F1", "bam_files",
+        "run_id", "TP%", "TP", "FP", "FN", "total_predicted",
+        "Precision", "Recall", "F1", "bam_files",
     ]
     with open(out_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")

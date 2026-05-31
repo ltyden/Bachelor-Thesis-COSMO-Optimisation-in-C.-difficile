@@ -13,38 +13,38 @@ so no completed iteration is re-run.
 Usage:
     # Full search space, optimising TP%
     python3 scripts/4.optimisation/bayesian_optimisation.py \
-        --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference2.csv \
+        --seed-data path/to/merged_dataset.csv \
+        --bam path/to/bam_file1 path/to/bam_file2 path/to/bam_file3 \
+        --gtf path/to/gtf_file \
+        --evo-reference path/to/evo_reference.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --n-iter 30 \
-        --output-dir parameter_optimisation/analysis/bo_run_1
+        --output-dir path/to/output_directory
 
-    # Narrowed ranges around the targeted-grid optimum, optimising F1
+    # Narrowed ranges, optimising F1
     python3 scripts/4.optimisation/bayesian_optimisation.py \
-        --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference2.csv \
+        --seed-data path/to/merged_dataset.csv \
+        --bam path/to/bam_file1 path/to/bam_file2 path/to/bam_file3 \
+        --gtf path/to/gtf_file \
+        --evo-reference path/to/evo_reference.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --target F1 \
         --n-iter 30 \
         --cds-range 1 5 --igr-range 1 5 --fd-cds-range 6 12 --fd-igr-range 2 4 \
-        --output-dir parameter_optimisation/analysis/bo_run_2
+        --output-dir path/to/output_directory
 
     # Resume an interrupted run (same --output-dir and same arguments as original)
     python3 scripts/4.optimisation/bayesian_optimisation.py \
-        --seed-data parameter_optimisation/raw_datasets/merged_dataset.csv \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/NC_009089.1_fixed.gtf \
-        --evo-reference /path/to/evo_reference2.csv \
+        --seed-data path/to/merged_dataset.csv \
+        --bam path/to/bam_file1 path/to/bam_file2 path/to/bam_file3 \
+        --gtf path/to/gtf_file \
+        --evo-reference path/to/evo_reference.csv \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252 \
         --n-iter 30 \
-        --output-dir parameter_optimisation/analysis/bo_run_1
+        --output-dir path/to/output_directory
 
 Arguments:
     --seed-data       CSV (auto-detects ; or , delimiter) with prior evaluation
@@ -289,8 +289,8 @@ def main():
     args = parser.parse_args()
 
     seed_path  = Path(args.seed_data)
-    bam_files  = [Path(b) for b in args.bam]
-    gtf        = Path(args.gtf)
+    bam_files  = [Path(b).resolve() for b in args.bam]
+    gtf        = Path(args.gtf).resolve()
     evo_path   = Path(args.evo_reference)
     output_dir = Path(args.output_dir)
 

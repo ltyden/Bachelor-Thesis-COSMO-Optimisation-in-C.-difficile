@@ -78,10 +78,16 @@ PARAMETERS COMPUTED
 
 USAGE
 -----
-    python analyze_gtf_bam.py <annotations.gtf> <alignments.bam>
+    python3 scripts/1.biological_data_analyis/analyze_gtf_bam.py \
+        path/to/gtf_file \
+        path/to/bam_file \
+        [--output-dir path/to/output_directory]
 
     The BAM file must be sorted and indexed (.bai file in the same directory).
     If not already sorted/indexed, the script will do this automatically.
+
+    Output plot is saved to the output directory as gtf_bam_distributions.png.
+    Default output directory: current working directory.
 
 DEPENDENCIES
 ------------
@@ -89,6 +95,7 @@ DEPENDENCIES
 ================================================================================
 """
 
+import argparse
 import sys
 import os
 import statistics
@@ -500,13 +507,19 @@ def plot_distribution(ax, data, title, xlabel, color, log_x=False):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    if len(sys.argv) != 3:
-        print(__doc__)
-        print("Usage: python analyze_gtf_bam.py <annotations.gtf> <alignments.bam>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Analyse GTF + BAM to compute C. difficile operon parameter distributions."
+    )
+    parser.add_argument("gtf", help="Path to GTF annotation file")
+    parser.add_argument("bam", help="Path to BAM alignment file (must be sorted and indexed)")
+    parser.add_argument(
+        "--output-dir", default=".",
+        help="Directory to save the output PNG (default: current directory)"
+    )
+    args = parser.parse_args()
 
-    gtf_path = sys.argv[1]
-    bam_path = sys.argv[2]
+    gtf_path = args.gtf
+    bam_path = args.bam
 
     # ── Load inputs ─────────────────────────────────────────────────────
     print(f"\n{'='*65}")
@@ -561,11 +574,11 @@ def main():
         "Sample: Wildtype Control 1",
         fontsize=13, fontweight="bold", y=0.99)
 
-    out_path = "gtf_bam_distributions.png"
+    os.makedirs(args.output_dir, exist_ok=True)
+    out_path = os.path.join(args.output_dir, "gtf_bam_distributions.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     print(f"\nPlot saved -> {out_path}\n")
-    plt.show()
 
 
 if __name__ == "__main__":

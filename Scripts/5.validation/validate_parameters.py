@@ -11,8 +11,8 @@ FN  — EVO not exactly matched by any predicted operon
 Usage:
     python3 scripts/5.validation/validate_parameters.py \
         --cds 1 --igr 2 --fd-cds 6 --fd-igr 2 \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --gtf /path/to/NC_009089.1_fixed.gtf \
+        --bam path/to/bam_file1 path/to/bam_file2 path/to/bam_file3 \
+        --gtf path/to/gtf_file \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
 

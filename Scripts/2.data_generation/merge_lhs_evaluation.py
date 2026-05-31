@@ -3,13 +3,13 @@ Merges the LHS parameter combinations with the COSMO evaluation results.
 
 Usage:
     python3 scripts/2.data_generation/merge_lhs_evaluation.py \
-        <lhs_csv> <evaluation_csv> [--output <path>]
+        path/to/lhs_combinations.csv \
+        path/to/evaluation_results.csv \
+        --output path/to/output_file.csv
 
 Arguments:
     lhs_csv          Path to the LHS combinations CSV
-                     (e.g. parameter_optimisation/raw_datasets/lhs_combinations.csv)
     evaluation_csv   Path to the evaluation results CSV produced by evaluate_cosmo.py
-                     (e.g. parameter_optimisation/raw_datasets/evaluation_results.csv)
     --output         Path to write the merged CSV
                      (default: parameter_optimisation/raw_datasets/raw_dataset_regression.csv)
 """

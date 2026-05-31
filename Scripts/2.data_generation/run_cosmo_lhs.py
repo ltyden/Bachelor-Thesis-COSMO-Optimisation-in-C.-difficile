@@ -7,41 +7,22 @@ sample_{n}_bam{i}.csv so results from different BAM files don't overwrite
 each other. evaluate_cosmo.py then merges them before evaluation.
 
 Usage:
-    # All three BAM files from scratch
+    # All BAM files from scratch
     python3 scripts/2.data_generation/run_cosmo_lhs.py \
-        --lhs-file parameter_optimisation/raw_datasets/lhs_combinations.csv \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --output-dir parameter_optimisation/raw_datasets/lhs_output \
-        --gtf /path/to/annotation.gtf \
+        --lhs-file path/to/combinations.csv \
+        --bam path/to/bam_file1 path/to/bam_file2 path/to/bam_file3 \
+        --output-dir path/to/output_directory \
+        --gtf path/to/gtf_file \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
 
-    # wt1 already done — resume with wt2 and wt3, telling the script their index starts at 2
+    # Resume — wt1 already done, continue with wt2 and wt3 (index starts at 2)
     python3 scripts/2.data_generation/run_cosmo_lhs.py \
-        --lhs-file parameter_optimisation/raw_datasets/lhs_combinations.csv \
-        --bam /path/to/wt2.bam /path/to/wt3.bam \
+        --lhs-file path/to/combinations.csv \
+        --bam path/to/bam_file2 path/to/bam_file3 \
         --first-bam-index 2 \
-        --output-dir parameter_optimisation/raw_datasets/lhs_output \
-        --gtf /path/to/annotation.gtf \
-        --genome-name "gi|126697566|ref|NC_009089.1|" \
-        --genome-size 4290252
-
-    # Targeted grid — separate output folder so files don't collide with LHS results
-    python3 scripts/2.data_generation/run_cosmo_lhs.py \
-        --lhs-file parameter_optimisation/raw_datasets/targeted_grid.csv \
-        --bam /path/to/wt1.bam /path/to/wt2.bam /path/to/wt3.bam \
-        --output-dir parameter_optimisation/raw_datasets/targeted_grid_output \
-        --gtf /path/to/annotation.gtf \
-        --genome-name "gi|126697566|ref|NC_009089.1|" \
-        --genome-size 4290252
-
-    # Targeted grid — only wt2 and wt3 (wt1 already done), starting index at 2
-    python3 scripts/2.data_generation/run_cosmo_lhs.py \
-        --lhs-file parameter_optimisation/raw_datasets/targeted_grid.csv \
-        --bam /path/to/wt2.bam /path/to/wt3.bam \
-        --first-bam-index 2 \
-        --output-dir parameter_optimisation/raw_datasets/targeted_grid_output \
-        --gtf /path/to/annotation.gtf \
+        --output-dir path/to/output_directory \
+        --gtf path/to/gtf_file \
         --genome-name "gi|126697566|ref|NC_009089.1|" \
         --genome-size 4290252
 """

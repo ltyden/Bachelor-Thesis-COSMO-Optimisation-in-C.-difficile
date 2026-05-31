@@ -2,12 +2,16 @@
 """
 Dataset Preprocessing Script for Regression Analysis
 
-This script performs comprehensive preprocessing on your COSMO optimization dataset
-following the checklist: deduplication, missing value handling, variance checking,
-outlier detection, multicollinearity analysis, train-test split, and feature scaling.
+Performs deduplication, missing value handling, variance checking, outlier
+detection, multicollinearity analysis, train-test split, and feature scaling.
 
-Output: cleaned_dataset.csv (preprocessed data for regression)
-        train_set.csv, test_set.csv (80/20 split if save_splits=True)
+Output: cleaned_dataset.csv, train_set.csv, test_set.csv (in --output-dir)
+
+Usage:
+    python3 scripts/3.preprocess/preprocess_dataset.py \
+        path/to/input_file.csv TP% \
+        --output-dir path/to/output_directory \
+        [--scaling minmax|standard] [--no-plots] [--no-splits]
 """
 
 import argparse
@@ -25,8 +29,6 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-ANALYSIS_DIR = PROJECT_ROOT / "parameter_optimisation" / "analysis"
-CLEANED_DIR = PROJECT_ROOT / "parameter_optimisation" / "cleaned_datasets"
 
 
 def load_dataset(input_file):
@@ -249,7 +251,7 @@ def step8_feature_scaling(df_train, df_test, param_cols, scaling_method='minmax'
     df_train_scaled[param_cols] = scaler.transform(df_train[param_cols])
     df_test_scaled[param_cols] = scaler.transform(df_test[param_cols])
 
-    scaler_path = CLEANED_DIR / f'scaler_{scaling_method}.pkl'
+    scaler_path = Path(args.output_dir) / f'scaler_{scaling_method}.pkl'
     joblib.dump(scaler, scaler_path)
     print(f"\n✓ Scaler fitted on training set only (no leakage)")
     print(f"✓ Scaler saved to: {scaler_path}")
@@ -301,9 +303,10 @@ Examples:
         help='Feature scaling method (default: minmax)'
     )
     parser.add_argument(
-        '--output', '-o',
-        default='cleaned_dataset.csv',
-        help='Output filename (saved under parameter_optimisation/cleaned_datasets/)'
+        '--output-dir', '-o',
+        default=str(PROJECT_ROOT / "parameter_optimisation" / "cleaned_datasets"),
+        metavar='DIR',
+        help='Directory for all output files (default: parameter_optimisation/cleaned_datasets/)'
     )
     parser.add_argument('--no-plots', action='store_true', help='Skip generating plots')
     parser.add_argument('--no-splits', action='store_true', help='Skip train/test split files')
@@ -312,7 +315,9 @@ Examples:
 
     param_cols = ['CDS_min', 'IGR_min', 'FD_CDS-CDS_min', 'FD_IGR-CDS_min']
     input_file = args.input_file
-    output_file = CLEANED_DIR / Path(args.output).name
+    CLEANED_DIR = Path(args.output_dir)
+    ANALYSIS_DIR = CLEANED_DIR
+    output_file = CLEANED_DIR / "cleaned_dataset.csv"
     outcome_col = args.outcome_variable
     scaling_method = args.scaling
     save_plots = not args.no_plots
